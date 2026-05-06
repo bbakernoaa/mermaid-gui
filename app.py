@@ -54,7 +54,108 @@ mermaid_html = f"""
 <script type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
     import {{ Canvg }} from 'https://cdn.jsdelivr.net/npm/canvg@4.0.1/+esm';
-    mermaid.initialize({{ startOnLoad: true }});
+
+    // Force SVG labels instead of HTML labels for better compatibility with export tools
+    mermaid.initialize({{
+        startOnLoad: true,
+        htmlLabels: false,
+        flowchart: {{ useHtmlLabels: false, htmlLabels: false }},
+        sequence: {{ useHtmlLabels: false }},
+        gantt: {{ useHtmlLabels: false }}
+    }});
+
+    window.getSerializedSVG = function(sourceSvg) {{
+        const clone = sourceSvg.cloneNode(true);
+
+        // Ensure absolute dimensions for consistency in tools like canvg
+        const viewBox = sourceSvg.viewBox.baseVal;
+        const width = viewBox.width || sourceSvg.clientWidth || 800;
+        const height = viewBox.height || sourceSvg.clientHeight || 600;
+
+        clone.setAttribute("width", width);
+        clone.setAttribute("height", height);
+        clone.setAttribute("xml:space", "preserve");
+        clone.setAttribute("text-rendering", "geometricPrecision");
+
+        // Function to inline styles
+        function inlineStyles(source, target) {{
+            const computedStyle = window.getComputedStyle(source);
+            const relevantProps = [
+                'fill', 'fill-opacity', 'fill-rule',
+                'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray', 'stroke-opacity',
+                'font-family', 'font-size', 'font-weight', 'font-style', 'letter-spacing', 'word-spacing',
+                'text-anchor', 'dominant-baseline',
+                'opacity', 'visibility', 'display',
+                'stop-color', 'stop-opacity',
+                'marker-start', 'marker-end', 'marker-mid'
+            ];
+
+            for (const prop of relevantProps) {{
+                const value = computedStyle.getPropertyValue(prop);
+                if (value) {{
+                    // Ensure marker URLs are relative
+                    if (prop.startsWith('marker') && value.includes('url(')) {{
+                        // Match everything after the last # inside the url()
+                        const match = value.match(/url\\(["']?.*?(#[^"\\)]+)["']?\\)/);
+                        if (match) {{
+                            target.style[prop] = `url(${{match[1]}})`;
+                            continue;
+                        }}
+                    }}
+                    target.style[prop] = value;
+                }}
+            }}
+
+            // Special handling for background-color -> fill (for nodes/clusters)
+            const fill = computedStyle.getPropertyValue('fill');
+            const bgColor = computedStyle.getPropertyValue('background-color');
+            if ((!fill || fill === 'none' || fill === 'transparent' || fill === 'rgba(0, 0, 0, 0)') &&
+                bgColor && bgColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'transparent') {{
+                target.style.fill = bgColor;
+            }}
+        }}
+
+        // Apply styles recursively
+        const allSourceElements = sourceSvg.querySelectorAll('*');
+        const allCloneElements = clone.querySelectorAll('*');
+
+        for (let i = 0; i < allSourceElements.length; i++) {{
+            const sourceEl = allSourceElements[i];
+            const cloneEl = allCloneElements[i];
+            inlineStyles(sourceEl, cloneEl);
+
+            // Explicitly preserve space on text and tspan elements
+            const tagName = sourceEl.tagName.toLowerCase();
+            if (tagName === 'text' || tagName === 'tspan') {{
+                cloneEl.setAttribute("xml:space", "preserve");
+            }}
+        }}
+
+        // Remove internal style tags to avoid conflicts
+        const internalStyles = clone.querySelectorAll('style');
+        internalStyles.forEach(s => s.remove());
+
+        // Add a minimal style for text white-space
+        const styleElement = document.createElementNS("http://www.w3.org/2000/svg", "style");
+        styleElement.textContent = "text, tspan {{ white-space: pre; }}";
+        clone.prepend(styleElement);
+
+        const serializer = new XMLSerializer();
+        let source = serializer.serializeToString(clone);
+
+        // Clean up any absolute URLs that might have sneaked in during serialization
+        // Matches url("http://...#id") or url(http://...#id)
+        // Replaces with url(#id)
+        source = source.replace(/url\\(["']?https?:\\/\\/[^#^"^'^\\)]+(#[^"\\)^']+?)["']?\\)/g, 'url($1)');
+
+        if(!source.match(/^<svg[^>]+xmlns="http:\\/\\/www\\.w3\\.org\\/2000\\/svg"/)) {{
+            source = source.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
+        }}
+        if(!source.match(/^<svg[^>]+xmlns:xlink="http:\\/\\/www\\.w3\\.org\\/1999\\/xlink"/)) {{
+            source = source.replace(/^<svg/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
+        }}
+        return source;
+    }};
 
     window.downloadSVG = function() {{
         const svgElement = document.querySelector("#mermaid-container svg");
@@ -62,14 +163,8 @@ mermaid_html = f"""
             alert("SVG not found. Please wait for the diagram to render.");
             return;
         }}
-        const serializer = new XMLSerializer();
-        let source = serializer.serializeToString(svgElement);
-        if(!source.match(/^<svg[^>]+xmlns="http:\\/\\/www\\.w3\\.org\\/2000\\/svg"/)) {{
-            source = source.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
-        }}
-        if(!source.match(/^<svg[^>]+xmlns:xlink="http:\\/\\/www\\.w3\\.org\\/1999\\/xlink"/)) {{
-            source = source.replace(/^<svg/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
-        }}
+
+        const source = window.getSerializedSVG(svgElement);
         const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(source);
         const downloadLink = document.createElement("a");
         downloadLink.href = url;
@@ -85,24 +180,32 @@ mermaid_html = f"""
             alert("SVG not found. Please wait for the diagram to render.");
             return;
         }}
-        const serializer = new XMLSerializer();
-        const svgData = serializer.serializeToString(svgElement);
-        const canvas = document.createElement("canvas");
-        const svgRect = svgElement.getBoundingClientRect();
 
-        // Increase resolution for better quality
-        const scale = 2;
-        canvas.width = svgRect.width * scale;
-        canvas.height = svgRect.height * scale;
+        const viewBox = svgElement.viewBox.baseVal;
+        const width = viewBox.width || svgElement.clientWidth;
+        const height = viewBox.height || svgElement.clientHeight;
+
+        const svgData = window.getSerializedSVG(svgElement);
+        const canvas = document.createElement("canvas");
+
+        // Increase resolution for high-quality export
+        const scale = 3;
+        canvas.width = width * scale;
+        canvas.height = height * scale;
         const ctx = canvas.getContext("2d");
 
+        // Fill background with white
         ctx.fillStyle = "white";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         const v = await Canvg.from(ctx, svgData);
-        await v.render();
+        await v.render({{
+            ignoreMouse: true,
+            ignoreAnimation: true,
+            scale: scale
+        }});
 
-        const pngUrl = canvas.toDataURL("image/png");
+        const pngUrl = canvas.toDataURL("image/png", 1.0);
         const downloadLink = document.createElement("a");
         downloadLink.href = pngUrl;
         downloadLink.download = "diagram.png";
