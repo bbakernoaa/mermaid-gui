@@ -53,6 +53,7 @@ mermaid_html = f"""
 </div>
 <script type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    import {{ Canvg }} from 'https://cdn.jsdelivr.net/npm/canvg@4.0.1/+esm';
     mermaid.initialize({{ startOnLoad: true }});
 
     window.downloadSVG = function() {{
@@ -78,7 +79,7 @@ mermaid_html = f"""
         document.body.removeChild(downloadLink);
     }};
 
-    window.downloadPNG = function() {{
+    window.downloadPNG = async function() {{
         const svgElement = document.querySelector("#mermaid-container svg");
         if (!svgElement) {{
             alert("SVG not found. Please wait for the diagram to render.");
@@ -95,25 +96,19 @@ mermaid_html = f"""
         canvas.height = svgRect.height * scale;
         const ctx = canvas.getContext("2d");
 
-        const img = new Image();
-        const svgBlob = new Blob([svgData], {{type: "image/svg+xml;charset=utf-8"}});
-        const url = URL.createObjectURL(svgBlob);
+        ctx.fillStyle = "white";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        img.onload = function() {{
-            ctx.fillStyle = "white";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            URL.revokeObjectURL(url);
+        const v = await Canvg.from(ctx, svgData);
+        await v.render();
 
-            const pngUrl = canvas.toDataURL("image/png");
-            const downloadLink = document.createElement("a");
-            downloadLink.href = pngUrl;
-            downloadLink.download = "diagram.png";
-            document.body.appendChild(downloadLink);
-            downloadLink.click();
-            document.body.removeChild(downloadLink);
-        }};
-        img.src = url;
+        const pngUrl = canvas.toDataURL("image/png");
+        const downloadLink = document.createElement("a");
+        downloadLink.href = pngUrl;
+        downloadLink.download = "diagram.png";
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
     }};
 </script>
 """
