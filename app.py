@@ -1,3 +1,4 @@
+import html
 import streamlit as st
 import streamlit.components.v1 as components
 import textwrap
@@ -38,8 +39,11 @@ st.sidebar.download_button(
 st.subheader("Preview")
 
 # Clean up mermaid code for the HTML component
-# Use textwrap.dedent and then substitute into the HTML
+# Use textwrap.dedent, then HTML-escape so the browser's HTML parser does not
+# eat sequences like "<<interface>>" (parsed as tags) before mermaid reads the
+# text back via textContent, which receives the unescaped original.
 clean_mermaid_code = textwrap.dedent(mermaid_code)
+escaped_mermaid_code = html.escape(clean_mermaid_code, quote=False)
 
 mermaid_html = f"""
 <div style="margin-bottom: 10px;">
@@ -48,7 +52,7 @@ mermaid_html = f"""
 </div>
 <div id="mermaid-container" style="background-color: white; padding: 20px; border-radius: 10px; overflow: auto;">
     <pre class="mermaid">
-{clean_mermaid_code}
+{escaped_mermaid_code}
     </pre>
 </div>
 <script type="module">
