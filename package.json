@@ -1,0 +1,17 @@
+{
+  "name": "mermaid-gui-dev",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Dev-only test harness for the Mermaid GUI. The deployed site is static and build-step-free; nothing here runs at deploy time.",
+  "scripts": {
+    "serve": "python3 -m http.server 8000 --bind 127.0.0.1",
+    "fixtures": "python3 tests/dump_catalog.py && python3 tests/build_fixture.py",
+    "test:py": "python3 -m pytest tests/ -q",
+    "test:browser": "npm run fixtures && playwright test",
+    "test:live": "npm run fixtures && env MMD_LIVE=1 MMD_APP=live playwright test tests/live-app.spec.ts",
+    "test": "npm run test:py && npm run test:browser"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}
