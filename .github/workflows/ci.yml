@@ -29,6 +29,10 @@ jobs:
   browser:
     name: Browser contracts (Playwright + Chromium)
     runs-on: ubuntu-latest
+    env:
+      # One worker: every suite drives the same local static server, and the heavy
+      # fixtures (a 50 000-character diagram) are happier alone.
+      PW_WORKERS: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,8 +45,21 @@ jobs:
         run: python -m pip install --upgrade pip pytest
       - name: Install Node test tooling
         run: npm ci
-      - name: Install Chromium for Playwright
-        run: npx playwright install --with-deps chromium
+      - name: Install a browser for Playwright
+        # Playwright's own Chromium is preferred, because `npm ci` pins the version
+        # and therefore pins the browser build. Its list of supported distributions
+        # lags behind the runner image, though: `ubuntu-latest` moved to Ubuntu 26.04
+        # and Playwright 1.55 refuses to install there ("Playwright does not support
+        # chromium on ubuntu26.04-x64"), so fall back to the Google Chrome the image
+        # already ships -- which is the same channel this suite was developed
+        # against locally, so the assertion results stay comparable.
+        run: |
+          if npx playwright install --with-deps chromium; then
+            echo "Using Playwright's own Chromium."
+          else
+            echo "::notice::Playwright cannot install on this image; using the runner's Google Chrome"
+            echo "MMD_BROWSER_CHANNEL=chrome" >> "$GITHUB_ENV"
+          fi
       - name: Build the fixture pages from the shipped modules
         # The browser contracts must run against the real render/export
         # components and the resolver's own output, so the pages are generated at
@@ -51,9 +68,7 @@ jobs:
           python3 tests/dump_catalog.py
           python3 tests/build_fixture.py
       - name: Run the browser suites
-        # One worker: every suite drives the same local static server, and the
-        # heavy fixtures (a 50 000-character diagram) are happier alone.
-        run: npx playwright test --reporter=line
+        run: npx playwright test --reporter=line --workers=${PW_WORKERS}
       - name: Upload reports on failure
         if: failure()
         uses: actions/upload-artifact@v4

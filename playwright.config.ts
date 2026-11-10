@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { defineConfig } from '@playwright/test';
@@ -7,28 +7,54 @@ import { defineConfig } from '@playwright/test';
 // here ever runs at deploy time (constitution I.3).
 
 /**
- * Which browser to drive. CI always uses the Chromium Playwright itself installs
- * (`npx playwright install --with-deps chromium`), so it never depends on what a
- * runner image happens to ship. Locally, Playwright's own build is preferred when
- * it is present; when it is not (the ~150 MB download is frequently unavailable),
- * the Chrome already on the machine is used instead. Set MMD_BROWSER_CHANNEL to
- * choose explicitly ('chrome', 'msedge', or unset for Playwright's Chromium).
+ * Which browser to drive. `MMD_BROWSER_CHANNEL` always wins; otherwise CI uses the
+ * Chromium `npx playwright install` put in the cache (the workflow drops this
+ * variable to `chrome` when Playwright does not support the runner's distribution
+ * yet, which is how `ubuntu-latest` moving to Ubuntu 26 broke the first attempt),
+ * and a local run uses Playwright's own build when it is present, falling back to
+ * the machine's Chrome when it is not (that download is ~150 MB and often
+ * unavailable). Set `MMD_BROWSER_CHANNEL=chrome` to choose explicitly.
  */
-/** The browsers `npx playwright install` put in this machine's cache, if any. */
+/**
+ * Whether `npx playwright install` actually put a usable Chromium in this
+ * machine's cache. A directory alone is not proof: an interrupted download leaves
+ * a folder with no executable, and launching that fails with a message nobody can
+ * read. So look for the real binary inside any chromium build directory.
+ */
 function playwrightChromiumInstalled(): boolean {
   const roots = [
     path.join(homedir(), 'Library', 'Caches', 'ms-playwright'), // macOS
     path.join(homedir(), '.cache', 'ms-playwright'), // Linux
   ];
+  const executables = [
+    ['chrome-linux', 'chrome'],
+    ['chrome-linux', 'headless_shell'],
+    ['chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'],
+    ['chrome-mac', 'headless_shell'],
+    ['chrome-mac-arm64', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'],
+    ['win', 'chrome.exe'],
+  ];
   return roots.some((root) => {
-    if (!existsSync(root)) return false;
-    let names: string[] = [];
+    let builds: string[] = [];
     try {
-      names = readdirSync(root);
+      builds = readdirSync(root);
     } catch {
       return false;
     }
-    return names.some((name) => name.startsWith('chromium') && existsSync(path.join(root, name)));
+    return builds.some((build) => {
+      if (!build.startsWith('chromium')) return false;
+      const dir = path.join(root, build);
+      return executables.some((parts) => {
+        const candidate = path.join(dir, ...parts);
+        if (!existsSync(candidate)) return false;
+        try {
+          // A "successful" download is tens of megabytes, not a stub.
+          return statSync(candidate).size > 1_000_000;
+        } catch {
+          return false;
+        }
+      });
+    });
   });
 }
 
@@ -49,9 +75,7 @@ export default defineConfig({
     // GitHub Actions installs Playwright's own Chromium. Locally that download is
     // ~150 MB per version and frequently unavailable, so if it is missing we drive
     // the browser already on the machine. Set MMD_BROWSER_CHANNEL to choose.
-    channel: process.env.CI
-      ? undefined
-      : process.env.MMD_BROWSER_CHANNEL || (bundledChromium ? undefined : 'chrome'),
+    channel: process.env.MMD_BROWSER_CHANNEL || (process.env.CI || bundledChromium ? undefined : 'chrome'),
   },
   webServer: {
     command: 'python3 -m http.server 8000 --bind 127.0.0.1',
