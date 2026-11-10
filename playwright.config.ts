@@ -1,13 +1,38 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { defineConfig } from '@playwright/test';
 
 // Dev-only harness. The deployed site is static and build-step-free, so nothing
 // here ever runs at deploy time (constitution I.3).
-const bundledChromium = existsSync(
-  path.join(homedir(), 'Library', 'Caches', 'ms-playwright', 'chromium_headless_shell-1187')
-);
+
+/**
+ * Which browser to drive. CI always uses the Chromium Playwright itself installs
+ * (`npx playwright install --with-deps chromium`), so it never depends on what a
+ * runner image happens to ship. Locally, Playwright's own build is preferred when
+ * it is present; when it is not (the ~150 MB download is frequently unavailable),
+ * the Chrome already on the machine is used instead. Set MMD_BROWSER_CHANNEL to
+ * choose explicitly ('chrome', 'msedge', or unset for Playwright's Chromium).
+ */
+/** The browsers `npx playwright install` put in this machine's cache, if any. */
+function playwrightChromiumInstalled(): boolean {
+  const roots = [
+    path.join(homedir(), 'Library', 'Caches', 'ms-playwright'), // macOS
+    path.join(homedir(), '.cache', 'ms-playwright'), // Linux
+  ];
+  return roots.some((root) => {
+    if (!existsSync(root)) return false;
+    let names: string[] = [];
+    try {
+      names = readdirSync(root);
+    } catch {
+      return false;
+    }
+    return names.some((name) => name.startsWith('chromium') && existsSync(path.join(root, name)));
+  });
+}
+
+const bundledChromium = playwrightChromiumInstalled();
 
 export default defineConfig({
   testDir: './tests',
@@ -24,7 +49,9 @@ export default defineConfig({
     // GitHub Actions installs Playwright's own Chromium. Locally that download is
     // ~150 MB per version and frequently unavailable, so if it is missing we drive
     // the browser already on the machine. Set MMD_BROWSER_CHANNEL to choose.
-    channel: process.env.MMD_BROWSER_CHANNEL || (bundledChromium ? undefined : 'chrome'),
+    channel: process.env.CI
+      ? undefined
+      : process.env.MMD_BROWSER_CHANNEL || (bundledChromium ? undefined : 'chrome'),
   },
   webServer: {
     command: 'python3 -m http.server 8000 --bind 127.0.0.1',

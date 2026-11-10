@@ -247,7 +247,11 @@ test.describe('preview comfort', () => {
     expect((await labelStrings(dark.comp)).join(' ')).toContain('Start');
   });
 
-  test('one keystroke round trip on 120 lines stays well under a second (SC-009)', async ({ page }) => {
+  // SC-009's own bound: "any single appearance or text change reflected on screen
+  // within 3 seconds on ordinary hardware". CI runners are slower than a laptop, so
+  // the assertion is the spec's number rather than a locally-measured one; the value
+  // is printed either way, so a regression is visible before it becomes a failure.
+  test('a text change on a 120-line diagram is on screen within 3 seconds (SC-009)', async ({ page }) => {
     const h = await openApp(page, 'long');
     await waitState(h.comp, 'rendered');
     const source = MANIFEST.baked.long.source + '\n';
@@ -256,14 +260,17 @@ test.describe('preview comfort', () => {
     await send(h.comp, { source, requestId: nextRequestId() });
     await waitState(h.comp, 'rendered');
     const elapsed = Date.now() - started;
-    expect(elapsed, `${elapsed} ms from keystroke to picture on a 120-line diagram`).toBeLessThan(2500);
+    console.log(`SC-009 keystroke round trip: ${elapsed} ms`);
+    expect(elapsed, `${elapsed} ms from keystroke to picture on a 120-line diagram`).toBeLessThan(3000);
 
     // The debounce is a floor, not a queue: a second change right away must still
     // land promptly rather than waiting behind the first.
     const again = Date.now();
     await send(h.comp, { source: source + '\n', requestId: nextRequestId() });
     await waitState(h.comp, 'rendered');
-    expect(Date.now() - again, 'back-to-back edits stay responsive').toBeLessThan(2500);
+    const second = Date.now() - again;
+    console.log(`SC-009 second edit: ${second} ms`);
+    expect(second, 'back-to-back edits stay responsive').toBeLessThan(3000);
   });
 
   test('zoom never re-renders the diagram (FR-035, cost check)', async ({ page }) => {
