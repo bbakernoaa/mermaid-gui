@@ -23,6 +23,17 @@ export const DEFAULT_EXPORT_SCALE = 'high';             // replaces the old hard
 export const EXPORT_BACKGROUNDS = ['diagram', 'white', 'transparent'];
 export const DEFAULT_EXPORT_BACKGROUND = 'diagram';
 
+/**
+ * A browser cannot raster an arbitrarily large picture: a 2D canvas over the
+ * implementation's edge or area limit silently yields an *empty* data URL, so the
+ * download would be a 0-byte PNG and the notice would still say "Saved". Long
+ * chain diagrams are legitimate here (the 50 000-character ceiling allows a
+ * 1 155-node spine, whose viewBox measured 404 x 133 933), so the limit is checked
+ * up front and reported in the same breath as the alternative that always works.
+ * Generous but well inside every engine's documented canvas limits.
+ */
+export const RASTER_LIMITS = { maxSide: 16384, maxPixels: 134217728 };  // 16k px edge / 128 MP
+
 // Inlining whitelist. Markers/fonts kept from app.py's original list; the
 // additions are what make derived/emphasised colours survive (research R-2).
 export const INLINE_PROPS = [
@@ -201,8 +212,19 @@ async function rasterise(svgMarkup, scale, background, Canvg) {
   // canvg sizes the canvas from the *markup* it is handed, so the scale has to be
   // written into the root <svg> before it parses. Pre-setting canvas.width here was
   // silently overwritten, which is how every scale setting produced the same PNG.
-  const rasterWidth = Math.max(1, Math.round(width * scale));
-  const rasterHeight = Math.max(1, Math.round(height * scale));
+  //
+  // A-9 says `print` and `screen` must differ by the scale difference *exactly*.
+  // Rounding each result separately breaks that promise as soon as the diagram's own
+  // width is fractional -- on Linux font metrics a 252.x px viewBox gave 506 px at
+  // screen and 1014 px at print, a 2.004 ratio, while the same file was exactly 2.0
+  // on macOS. So the base size is rounded once and every scale multiplies that
+  // integer: the ratio is 4/2 == 2.0 by construction, in any environment.
+  const baseWidth = Math.max(1, Math.round(width));
+  const baseHeight = Math.max(1, Math.round(height));
+  const rasterWidth = baseWidth * scale;
+  const rasterHeight = baseHeight * scale;
+  const plan = rasterPlan(rasterWidth, rasterHeight, baseWidth, baseHeight, scale);
+  if (!plan.ok) return plan;
   if (svg) {
     svg.setAttribute('width', String(rasterWidth));
     svg.setAttribute('height', String(rasterHeight));
@@ -223,7 +245,40 @@ async function rasterise(svgMarkup, scale, background, Canvg) {
   } finally {
     DOC.body.removeChild(container);
   }
-  return { canvas: canvas, width: rasterWidth, height: rasterHeight, scale: scale };
+  // `ok` is set on both paths: exportAs treats a missing flag as "the raster could
+  // not be drawn", and a silently-empty first version of this check produced a
+  // canvas that never downloaded.
+  return { ok: true, canvas: canvas, width: rasterWidth, height: rasterHeight, scale: scale };
+}
+
+/**
+ * Whether a raster this size can actually be drawn, and what to tell the user if
+ * it cannot. `feasible` is the highest advertised scale that fits, or 0 when the
+ * picture is too big at any scale -- in which case SVG is the answer, because a
+ * vector file carries the whole diagram at any size.
+ */
+export function rasterPlan(rasterWidth, rasterHeight, baseWidth, baseHeight, scale) {
+  const longest = Math.max(rasterWidth, rasterHeight);
+  const pixels = rasterWidth * rasterHeight;
+  if (longest <= RASTER_LIMITS.maxSide && pixels <= RASTER_LIMITS.maxPixels) {
+    return { ok: true };
+  }
+  const feasible = ['screen', 'high', 'print']
+    .map((name) => EXPORT_SCALES[name])
+    .filter((value) => Math.max(baseWidth, baseHeight) * value <= RASTER_LIMITS.maxSide
+      && baseWidth * baseHeight * value * value <= RASTER_LIMITS.maxPixels)
+    .sort((a, b) => a - b)
+    .pop() || 0;
+  const name = feasible ? Object.keys(EXPORT_SCALES).filter((key) => EXPORT_SCALES[key] === feasible)[0] : null;
+  return {
+    ok: false,
+    reason: 'rasterTooLarge',
+    requested: { width: rasterWidth, height: rasterHeight, scale: scale },
+    feasibleScale: feasible,
+    message: 'This diagram would need a ' + rasterWidth + ' x ' + rasterHeight
+      + ' pixel image, which is larger than a browser can draw. '
+      + (name ? 'Try the ' + name + ' scale instead.' : 'Use Export SVG: a vector file holds the whole diagram at any size.')
+  };
 }
 
 function intrinsicSize(svg) {
@@ -278,7 +333,16 @@ export async function exportAs(kind, options) {
   if (normalizedKind === 'png') {
     const Canvg = await loadCanvg(opts.canvgUrl);
     const raster = await rasterise(markup, scale, background, Canvg);
+    if (!raster.ok) return raster;
     const pngUrl = raster.canvas.toDataURL('image/png', 1.0);
+    if (!pngUrl || pngUrl.length < 32) {
+      // A canvas the engine refused, rather than one we predicted it would refuse.
+      return {
+        ok: false,
+        reason: 'rasterFailed',
+        message: 'The browser could not draw an image this size. Use Export SVG instead.',
+      };
+    }
     triggerDownload(pngUrl, filename);
     lastEcho = { kind: 'png', filename: filename, width: raster.width, height: raster.height, scale: scale };
     return Object.assign({ ok: true }, lastEcho);
@@ -326,6 +390,8 @@ export function __selfRegister__() {
     EXPORT_BACKGROUNDS: EXPORT_BACKGROUNDS,
     DEFAULT_EXPORT_BACKGROUND: DEFAULT_EXPORT_BACKGROUND,
     EXPORT_KINDS: EXPORT_KINDS,
+    RASTER_LIMITS: RASTER_LIMITS,
+    rasterPlan: rasterPlan,
     INLINE_PROPS: INLINE_PROPS,
     EXPORT_CONTRACT: EXPORT_CONTRACT,
     exportAs: exportAs,

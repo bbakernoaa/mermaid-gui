@@ -153,6 +153,17 @@ Resolution report includes `sourceOf: { knob → 'frontmatter'|'knob'|'default' 
 | A-8 | For every catalog type, resolving and rendering its plain example yields **no text clipping** (bounding-box check) at `largest` text scale and `open` density on the widest and tallest example | FR-002, SC-003 |
 | A-9 | Exported PNG at `print` vs `screen` has dimension ratio matching the scale difference exactly | FR-028 |
 
+A-9 is decided by arithmetic, not by measurement: `export_component.js` rounds the picture's own
+size to whole pixels **once** and every advertised scale multiplies that integer base
+(`screen` ×2, `high` ×3, `print` ×4), so `print` is exactly twice `screen` in any browser and with
+any font metrics. Rounding each result separately does not hold — a 252.x-px viewBox gave
+506 px at `screen` and 1014 px at `print` on Linux (ratio 2.004) while the same diagram was exact
+on macOS, which is why the CI assertion is `print == 2 * screen` in whole pixels.
+
+Diagrams too long for a browser canvas (a 1 155-node spine has a 404 × 133 933 viewBox, and a
+canvas over `RASTER_LIMITS` yields an *empty* data URL rather than an error) are refused before
+the raster is attempted, with the highest scale that fits named, or SVG suggested when none does.
+
 A-8 is the regression test for the spec's "largest text + tightest spacing must stay readable"
 edge case, and A-2 guards the exact class of bug fixed twice already in this repo (preview and
 export diverging).

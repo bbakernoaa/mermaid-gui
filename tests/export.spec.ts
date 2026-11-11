@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { openApp, toolbarButton, waitState, type Harness } from './support';
+import { openApp, openFixture, toolbarButton, waitState, type Harness } from './support';
 
 // V-E (story 5, FR-028..032). Three bug classes this repository already paid for
 // are asserted here: arrowheads and line styles must survive into the raster and
@@ -29,14 +29,17 @@ test.describe('export', () => {
     const print = await exportFrom(h, 'Export PNG');
     const printSize = rasterSize(print.path as string);
 
-    expect(printSize.width / screenSize.width, 'width ratio').toBeCloseTo(2.0, 3);
-    expect(printSize.height / screenSize.height, 'height ratio').toBeCloseTo(2.0, 3);
+    // A-9 is exactness, not "close to": print must be twice screen in whole pixels.
+    expect(printSize.width, 'print width is exactly 2x screen').toBe(screenSize.width * 2);
+    expect(printSize.height, 'print height is exactly 2x screen').toBe(screenSize.height * 2);
 
     await toolbar.getByLabel('Scale').selectOption('high');
     const high = await exportFrom(h, 'Export PNG');
     const highSize = rasterSize(high.path as string);
-    expect(highSize.width / screenSize.width, 'the middle setting is between the two').toBeGreaterThan(1);
-    expect(highSize.width / screenSize.width).toBeLessThan(2);
+    // high=3, screen=2, print=4, so all three share one integer base size.
+    expect(highSize.width * 2, 'the three scales are one base size x 2/3/4').toBe(screenSize.width * 3);
+    expect(highSize.height * 2).toBe(screenSize.height * 3);
+    expect(printSize.width * 3, 'and print is exactly 4/3 of high').toBe(highSize.width * 4);
   });
 
   test('a transparent background really has no baked white', async ({ page }) => {
@@ -141,6 +144,67 @@ test.describe('export', () => {
     });
     expect(accepted.ok, 'the newest request exports normally').toBe(true);
     expect(String(accepted.filename)).toMatch(/\.svg$/);
+  });
+
+  // A 1 155-node spine is within the 50 000-character ceiling and renders fine as
+  // a preview, but its viewBox measures 404 x 133 933: asking a browser to raster
+  // that yields an *empty* data URL, so the download used to be a 0-byte file and
+  // the notice still said "Saved". The exporter now predicts the limit and says
+  // what to do instead.
+  test('a diagram too tall to raster is refused with a route that works', async ({ page }) => {
+    const h = await openFixture(page, 'at-limit');
+    await waitState(h.comp, 'rendered');
+    const size = await h.comp.evaluate(() => {
+      const svg = document.querySelector('.mmd-canvas svg') as SVGSVGElement;
+      return { w: Math.round(svg.viewBox.baseVal.width), h: Math.round(svg.viewBox.baseVal.height) };
+    });
+    expect(size.h, 'the fixture really is a tall chain').toBeGreaterThan(20000);
+
+    await h.comp.locator('.mmd-toolbar').getByLabel('Scale').selectOption('print');
+    let downloaded: string | null = null;
+    await Promise.all([
+      page.waitForEvent('download', { timeout: 12_000 }).then((d) => { downloaded = d.suggestedFilename(); }).catch(() => null),
+      toolbarButton(h.comp, 'Export PNG').click(),
+    ]);
+    expect(downloaded, 'nothing may be offered for download when it cannot be drawn').toBeNull();
+
+    const notice = h.comp.locator('.mmd-panel--busy:not(.mmd-hidden), .mmd-panel--hint:not(.mmd-hidden)').first();
+    await expect(notice).toBeVisible({ timeout: 20_000 });
+    const text = await notice.innerText();
+    expect(text, 'the message states the size it could not draw').toMatch(/133933|larger than a browser can draw/i);
+    expect(text.toLowerCase(), 'and points at the export that always works').toMatch(/svg|high scale|screen scale/);
+
+    // Vector export carries the same diagram, so the route offered must actually work.
+    const [svgDownload] = await Promise.all([
+      page.waitForEvent('download', { timeout: 120_000 }),
+      toolbarButton(h.comp, 'Export SVG').click(),
+    ]);
+    const path = await svgDownload.path();
+    const markup = readFileSync(path as string, 'utf8');
+    expect(markup).toContain('<svg');
+    expect(markup.length, 'the vector file holds the whole 50 000-character diagram').toBeGreaterThan(100_000);
+  });
+
+  test('the size plan is decided by arithmetic, not by a failed canvas', async ({ page }) => {
+    const h = await openFixture(page, 'good');
+    await waitState(h.comp, 'rendered');
+    const plan = await h.comp.evaluate(() => {
+      const api = (window as any).__mermaidGuiExport__;
+      return {
+        limits: api.RASTER_LIMITS,
+        fits: api.rasterPlan(4000, 3000, 1000, 750, 4),
+        tooLong: api.rasterPlan(1616, 535732, 404, 133933, 4),
+        highOnly: api.rasterPlan(12000, 16000, 3000, 4000, 4),
+      };
+    });
+    expect(plan.fits.ok, 'an ordinary print export stays within the plan').toBe(true);
+    expect(plan.tooLong.ok, 'a 535k pixel edge is refused').toBe(false);
+    expect(plan.tooLong.reason).toBe('rasterTooLarge');
+    expect(plan.tooLong.feasibleScale, 'no advertised scale fits a 133k-long chain').toBe(0);
+    expect(plan.tooLong.message).toMatch(/SVG/i);
+    expect(plan.highOnly.feasibleScale, 'a 12 MP diagram fits at screen and high but not print').toBe(3);
+    expect(plan.highOnly.message).toMatch(/high scale/i);
+    void plan;
   });
 
   test('copy SVG explains a refused clipboard instead of failing silently (FR-032)', async ({ page }) => {
