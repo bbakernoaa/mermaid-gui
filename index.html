@@ -1,35 +1,118 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, shrink-to-fit=no"
-    />
-    <title>Mermaid Flowchart GUI</title>
-    <link
-      rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.73.0/build/stlite.css"
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <title>Mermaid Diagram Editor</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.73.0/build/stlite.css" />
+    <!-- Loaded before the boot script: index.html calls stlite.mount() itself. -->
+    <script src="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.73.0/build/stlite.js"></script>
+    <style>
+      /* Added next to the app's own editor by host_bridge.js (FR-033). Kept on the
+         page rather than in the component stylesheet because it lives in the app's
+         document, not in the preview iframe. */
+      .mmd-caret-readout {
+        margin: 0.15rem 0 0;
+        font-size: 0.78rem;
+        color: #6b7280;
+        font-variant-numeric: tabular-nums;
+      }
+      @media (prefers-color-scheme: dark) {
+        .mmd-caret-readout { color: #a5adba; }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
-    <script src="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.73.0/build/stlite.js"></script>
+
+    <!--
+      The page-side bridge: owns localStorage, the #p= share fragment, the
+      component iframe's height, and the in-memory mirror the stateless component
+      needs. It is a separate file because it is the part that cannot live inside
+      the app: Stlite runs Python in a Web Worker (no window, no localStorage)
+      and st.components.v1.html renders into a null-origin srcdoc iframe, so this
+      page is the only same-origin, real-DOM context in the product (spike S-1 in
+      specs/001-editor-experience-upgrades/research.md).
+    -->
+    <script src="host_bridge.js"></script>
+
     <script>
-      fetch("app.py")
-        .then((response) => response.text())
-        .then((appCode) => {
+      // Nothing below may assume the bridge loaded successfully: if host_bridge.js
+      // is missing (a partial deploy), the editor still has to start.
+      const root = document.getElementById("root");
+      const host = window.__mermaidGuiHost;
+      if (host && typeof host.install === "function" && !window.__mermaidGuiBoot) host.install();
+      const boot = host && typeof host.bootSnapshot === "function"
+        ? host.bootSnapshot()
+        : { version: 1, storage: "unavailable", href: window.location.href };
+
+      // Stlite runs the app out of a virtual filesystem. Every module file -
+      // Python and component assets alike - is fetched and mounted as one
+      // directory, so Path(__file__).parent inside Streamlit is exactly the
+      // directory holding the modules and the assets they read.
+      const APP_DIR = "mermaid-gui-app";
+      const MODULES = [
+        "appearance.py",
+        "host_bridge.js",
+        "messages.py",
+        "preview_asset.py",
+        "render_bridge.py",
+        "render_component.js",
+        "export_component.js",
+        "preview_component.css",
+        "share.py",
+        "states.py",
+        "templates.py",
+      ];
+
+      function readText(path) {
+        return fetch(encodeURI(path)).then((response) => {
+          if (!response.ok) throw new Error(path + " -> HTTP " + response.status);
+          return response.text();
+        });
+      }
+
+      function mountedFiles(appCode, texts) {
+        const files = {};
+        files[APP_DIR + "/app.py"] = appCode;
+        MODULES.forEach((name, index) => {
+          files[APP_DIR + "/" + name] = texts[index];
+        });
+        // The boot snapshot is how the app learns its share link, its draft and
+        // whether storage works - it cannot ask the browser itself.
+        files[APP_DIR + "/boot.json"] = JSON.stringify(boot);
+        return files;
+      }
+
+      function whenStlite(timeoutMs) {
+        return new Promise((resolve, reject) => {
+          const started = Date.now();
+          (function poll() {
+            if (window.stlite && typeof window.stlite.mount === "function") return resolve(window.stlite);
+            if (Date.now() - started > timeoutMs) return reject(new Error("Stlite never loaded"));
+            setTimeout(poll, 120);
+          })();
+        });
+      }
+
+      Promise.all([
+        whenStlite(30000),
+        readText("app.py"),
+        Promise.all(MODULES.map((name) => readText(name))),
+      ]).then(([stlite, appCode, texts]) =>
           stlite.mount(
-            {
-              requirements: [],
-              entrypoint: "app.py",
-              files: {
-                "app.py": appCode,
-              },
-            },
-            document.getElementById("root")
-          );
+            { requirements: [], entrypoint: APP_DIR + "/app.py", files: mountedFiles(appCode, texts) },
+            root
+          )
+        )
+        .then((api) => {
+          window.__mermaidGuiApp = api;
+        })
+        .catch((error) => {
+          root.textContent =
+            "The editor could not start. Check the network connection (Mermaid and Stlite load " +
+            "from CDNs) and reload. Details: " + (error && error.message ? error.message : String(error));
         });
     </script>
   </body>

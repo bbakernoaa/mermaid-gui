@@ -1,0 +1,25 @@
+classDiagram
+    class Animal{
+        <<interface>>
+        +String name
+        +makeSound() String
+    }
+    class Dog{
+        +bark() void
+    }
+    class Shelter~T~{
+        +List~int~ ids
+        +add(name String) boolean
+    }
+    class Suit{
+        <<enumeration>>
+        HEARTS
+        SPADES
+    }
+    class Vet
+    Animal <|-- Dog
+    Dog "1" --> "1..*" Shelter : houses (a pack)
+    Shelter o-- Suit : holds
+    Vet --> Shelter : examines
+    note for Animal "#quot;Beware#quot; of the dog's bowl, <b>markup</b> stays literal"
+    note for Shelter "Parentheses ( ... ) and an apostrophe's mark"
