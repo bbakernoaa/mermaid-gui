@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { openApp, openFixture, toolbarButton, waitState, type Harness } from './support';
+import { MANIFEST, openApp, openFixture, send, toolbarButton, waitState, type Harness } from './support';
 
 // V-E (story 5, FR-028..032). Three bug classes this repository already paid for
 // are asserted here: arrowheads and line styles must survive into the raster and
@@ -151,6 +151,88 @@ test.describe('export', () => {
   // that yields an *empty* data URL, so the download used to be a 0-byte file and
   // the notice still said "Saved". The exporter now predicts the limit and says
   // what to do instead.
+  // The blank-file class of bug: the raster can come back with the right
+  // dimensions, a valid header and a satisfied "Saved" notice while containing
+  // literally nothing. Dimensions alone therefore prove nothing, so the pixels are
+  // counted.
+  test('the PNG contains the drawing, not an empty plate', async ({ page }) => {
+    const h = await openFixture(page, 'typed-colors');
+    await waitState(h.comp, 'rendered');
+    const [png] = await Promise.all([
+      page.waitForEvent('download', { timeout: 90_000 }),
+      toolbarButton(h.comp, 'Export PNG').click(),
+    ]);
+    const bytes = readFileSync((await png.path()) as string);
+    expect(bytes.length, 'the file is not empty').toBeGreaterThan(1000);
+    const painted = await page.evaluate(async (data: string) => {
+      const bin = atob(data);
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) buf[i] = bin.charCodeAt(i);
+      const bitmap = await createImageBitmap(new Blob([buf], { type: 'image/png' }));
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+      ctx.drawImage(bitmap, 0, 0);
+      const img = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+      let ink = 0;
+      const palette = new Set<string>();
+      for (let i = 0; i < img.length; i += 4) {
+        if (img[i + 3] > 8) ink += 1;
+        palette.add(img[i] + ',' + img[i + 1] + ',' + img[i + 2]);
+      }
+      return { pixels: img.length / 4, ink, distinct: palette.size };
+    }, bytes.toString('base64'));
+    const fraction = painted.ink / painted.pixels;
+    console.log(`PNG ink ${(fraction * 100).toFixed(1)}% of ${painted.pixels} px, ${painted.distinct} colours`);
+    expect(fraction, 'the raster holds the picture, not an empty plate').toBeGreaterThan(0.05);
+    expect(painted.distinct, 'and it has more than one colour').toBeGreaterThan(3);
+  });
+
+  test('a journey export keeps its labels in a standalone file', async ({ page }) => {
+    // Journey is the one diagram type that ignores `htmlLabels: false` and draws its
+    // section and task labels as <foreignObject> HTML: a browser-only crutch that a
+    // standalone SVG cannot rely on and a rasteriser will not draw. The exporter
+    // carries those labels over as real <text>.
+    const h = await openFixture(page, 'good');
+    await waitState(h.comp, 'rendered');
+    const row = MANIFEST.catalog.rows.find((r) => r.typeId === 'journey' && r.purpose === 'styled')!;
+    const variant = MANIFEST.catalog.plain['journey/styled'];
+    await send(h.comp, { source: row.source, appearance: variant.appearance, chrome: variant.chrome });
+    await waitState(h.comp, 'rendered');
+
+    const previewHtmlLabels = await h.comp.evaluate(() => document.querySelectorAll('.mmd-canvas foreignObject').length);
+    expect(previewHtmlLabels, 'mermaid really does use HTML labels for journey').toBeGreaterThan(0);
+
+    const [svgFile] = await Promise.all([
+      page.waitForEvent('download', { timeout: 60_000 }),
+      toolbarButton(h.comp, 'Export SVG').click(),
+    ]);
+    const markup = readFileSync((await svgFile.path()) as string, 'utf8');
+    expect(markup, 'a standalone file cannot depend on HTML inside the picture').not.toMatch(/<foreignObject/);
+    expect(markup).toMatch(/<text[\s\S]*Discover/);
+    expect(markup).toMatch(/Find the app/);
+    expect(markup).toMatch(/Pick a type/);
+
+    const [pngFile] = await Promise.all([
+      page.waitForEvent('download', { timeout: 90_000 }),
+      toolbarButton(h.comp, 'Export PNG').click(),
+    ]);
+    const pngBytes = readFileSync((await pngFile.path()) as string);
+    const ink = await page.evaluate(async (data: string) => {
+      const bin = atob(data);
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) buf[i] = bin.charCodeAt(i);
+      const bitmap = await createImageBitmap(new Blob([buf], { type: 'image/png' }));
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+      ctx.drawImage(bitmap, 0, 0);
+      const img = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+      let ink = 0;
+      for (let i = 0; i < img.length; i += 4) if (img[i + 3] > 8) ink += 1;
+      return { pixels: img.length / 4, ink };
+    }, pngBytes.toString('base64'));
+    expect(ink.ink / ink.pixels, 'the journey raster is drawn, not blank').toBeGreaterThan(0.05);
+  });
+
   test('a diagram too tall to raster is refused with a route that works', async ({ page }) => {
     const h = await openFixture(page, 'at-limit');
     await waitState(h.comp, 'rendered');

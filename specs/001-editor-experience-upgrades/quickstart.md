@@ -191,10 +191,14 @@ involve another browser profile or an image viewer. Run `npm run test:live` firs
 covers 1-5 as well.
 
 1. `python3 -m http.server 8000`, open the page.
-2. Choose the **class diagram** example → renders, stereotypes intact.
+2. Choose the **class diagram** example → renders, stereotypes intact. Then switch Example to
+   `styled`: it loads immediately (app-loaded text is never treated as the user's own work), while
+   anything you typed yourself is still protected by a confirm before it is replaced.
 3. Bump text size to largest, spacing to open → legible, nothing clipped.
 4. Break a line → clear error with a line number; fix it → gone by itself.
 5. Export PNG with `high` scale + transparent; open in an image viewer over a dark page → correct.
+   The picture has to actually be *in* the file: an empty raster carries valid dimensions, so open it
+   and look (the automated check counts painted pixels, `npm run test:browser`).
 6. Reload → restore notice; copy link → open in a private window → same picture.
 7. Zoom out a mindmap to overview → whole diagram fits.
 

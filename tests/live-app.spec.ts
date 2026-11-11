@@ -1,4 +1,4 @@
-import { expect, test, type Page as PageLike } from '@playwright/test';
+import { expect, test, type Page as PageLike, type Page } from '@playwright/test';
 import { caretPosition, currentState, liveComponentFrame, openApp, pickOption, pollLive, setKnob, sliderValue, waitTerminal } from './support';
 
 // The end-to-end proof of the *deployed* shape: index.html boots Stlite from the
@@ -103,28 +103,51 @@ test.describe('live app', () => {
     await expect(editor, 'Streamlit never kept the typed text').toHaveValue(text, { timeout: 30_000 });
   }
 
-  test('the catalogue picker asks before overwriting, then loads its example (V-C 1, FR-020)', async ({ page }) => {
-    const h = await openApp(page, 'good');
-    await waitTerminal(h.comp, 'rendered');
+  test('switching starting points loads the example, and guards only the user\'s own text (V-C 1, FR-020)', async ({ page }) => {
+    await openApp(page, 'good');
 
+    // A catalogue example is the app's own text, so moving from a type's plain
+    // example to its styled one is one action, not two: the styled showcase has to
+    // actually reach the screen.
     await pickOption(page, 'Diagram type', 'Sequence diagram');
-    // The editor already holds text, so nothing may be overwritten silently.
-    const guard = page.locator('[data-testid="stSidebar"]').getByText(/differs from this starting point/);
-    await expect(guard, 'the app never silently replaces typed work').toBeVisible({ timeout: 30_000 });
-    expect((await page.locator('textarea').first().inputValue()), 'the old text stayed put').toContain('flowchart');
+    await pickOption(page, 'Example', 'styled');
+    await expect
+      .poll(async () => (await componentPayload(page, await liveComponentFrame(page))).source, { timeout: 90_000, message: 'the styled example never loaded' })
+      .toContain('sequenceDiagram');
+    await pollRendered(page);
+    const shown = await (await liveComponentFrame(page)).evaluate(() => Array.from(document.querySelectorAll('.mmd-canvas text')).map((node) => node.textContent || '').join(' '));
+    expect(shown, 'the styled sequence example is what is drawn').toMatch(/Render service|Mermaid editor/);
+    expect(await page.getByRole('button', { name: 'Replace it' }).count(), 'no confirmation for app-loaded text').toBe(0);
+
+    // Text the user wrote is different, and stays protected.
+    const editor = page.locator('textarea').first();
+    await editor.click();
+    await editor.press('ControlOrMeta+a');
+    await editor.press('Backspace');
+    await editor.pressSequentially('flowchart TD\n  A[My own work] --> B[Do not lose me]\n', { delay: 6 });
+    await editor.blur();
+    await expect
+      .poll(async () => (await componentPayload(page, await liveComponentFrame(page))).source, { timeout: 90_000 })
+      .toContain('My own work');
+
+    await pickOption(page, 'Diagram type', 'Class diagram');
+    const guard = page.locator('[data-testid="stSidebar"]').getByText(/text you wrote/);
+    await expect(guard, 'the app must not silently replace typed text').toBeVisible({ timeout: 30_000 });
+    expect((await editor.inputValue()), 'the typed text stayed put').toContain('My own work');
 
     await page.getByRole('button', { name: 'Replace it' }).click();
-    const editor = page.locator('textarea').first();
-    await expect(editor, 'the sequence example never loaded').not.toHaveValue(/flowchart/, { timeout: 60_000 });
+    await expect(editor, 'confirming loads the new starting point').not.toHaveValue(/My own work/, { timeout: 60_000 });
     await expect
-      .poll(async () => (await componentPayload(page, await liveComponentFrame(page))).source, { timeout: 90_000, message: 'the new example never reached the component' })
-      .toContain('sequenceDiagram');
+      .poll(async () => (await componentPayload(page, await liveComponentFrame(page))).source, { timeout: 90_000 })
+      .toContain('classDiagram');
+  });
+
+  /** Poll until whatever component document is current reports `rendered`. */
+  async function pollRendered(page: Page): Promise<void> {
     await expect
       .poll(() => liveComponentFrame(page).then((frame) => currentState(frame)), { timeout: 90_000 })
       .toBe('rendered');
-    const chip = await (await liveComponentFrame(page)).locator('.mmd-chip').first().innerText();
-    expect(chip.toLowerCase(), 'the component says what it drew').toContain('sequence');
-  });
+  }
 
   test('the component sits in the sandbox the bridge was designed for', async ({ page }) => {
     const h = await openApp(page, 'good');

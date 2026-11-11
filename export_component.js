@@ -41,9 +41,16 @@ export const INLINE_PROPS = [
   'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray', 'stroke-opacity', 'stroke-miterlimit',
   'font-family', 'font-size', 'font-weight', 'font-style', 'font-variant', 'letter-spacing', 'word-spacing', 'text-decoration',
   'text-anchor', 'dominant-baseline', 'alignment-baseline', 'baseline-shift', 'writing-mode', 'direction', 'unicode-bidi',
-  'opacity', 'visibility', 'display', 'clip-path', 'mask', 'filter',
+  'opacity', 'visibility', 'display', 'clip-path', 'filter',
   'stop-color', 'stop-opacity',
   'marker-start', 'marker-end', 'marker-mid',
+  // `mask` is deliberately absent above. Chromium reports a computed `mask: none` on
+  // every SVG element here (mermaid emits no <mask> node at all in this
+  // configuration: zero in the exported file), and canvg 4.0.1 mis-parses even that
+  // no-op declaration -- this markup with `mask:` inlined painted 0 of 102 400
+  // sampled pixels, and with it removed painted 11 975. A declaration whose value
+  // equals the property's initial one cannot change what a browser draws, so
+  // inlining it bought no fidelity and blanked every PNG export.
   'paint-order', 'shape-rendering', 'text-rendering', 'image-rendering',
 ];
 
@@ -120,6 +127,72 @@ export function getSerializedSVG(sourceSvg, doc) {
     ? sourceSvg.ownerView.getComputedStyle(el)
     : window.getComputedStyle(el));
 
+  // Journey keeps HTML labels no matter what `htmlLabels` says: mermaid 11 renders
+  // its section and task boxes through <foreignObject>, and the frozen
+  // `htmlLabels:false` (research R-2) has no effect on that diagram type -- verified
+  // by re-initializing with `htmlLabels:false`, `journey.htmlLabels:false` and
+  // `journey.useMaxWidth:false`, each of which still produced nine foreignObjects.
+  // A standalone file cannot depend on a stylesheet, and a rasteriser that ignores
+  // foreignObject would lose every journey label, so their text is carried over as
+  // real <text>, styled from what the browser computed for the live element.
+  function htmlLabelsToText() {
+    const liveBoxes = Array.prototype.slice.call(sourceSvg.querySelectorAll('foreignObject'));
+    const cloneBoxes = Array.prototype.slice.call(clone.querySelectorAll('foreignObject'));
+    cloneBoxes.forEach((box, index) => {
+      const live = liveBoxes[index];
+      if (!live || !box.parentNode) return;
+      const label = live.querySelector('.label, div') || live;
+      const text = (live.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text) {
+        box.parentNode.removeChild(box);
+        return;
+      }
+      const style = computed(label);
+      const fontSize = parseFloat(style.fontSize || '') || 12;
+      const boxWidth = parseFloat(box.getAttribute('width') || '') || 0;
+      const boxHeight = parseFloat(box.getAttribute('height') || '') || fontSize * 1.5;
+      const x = parseFloat(box.getAttribute('x') || '') || 0;
+      const y = parseFloat(box.getAttribute('y') || '') || 0;
+      const lines = wrapWords(text, boxWidth || 120, fontSize);
+      const lineHeight = Math.round(fontSize * 1.2);
+      const firstBaseline = y + boxHeight / 2 - ((lines.length - 1) * lineHeight) / 2 + fontSize * 0.35;
+      const node = document2.createElementNS('http://www.w3.org/2000/svg', 'text');
+      node.setAttribute('x', String(x + boxWidth / 2));
+      node.setAttribute('text-anchor', 'middle');
+      lines.forEach((line, lineIndex) => {
+        const child = document2.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+        child.setAttribute('x', String(x + boxWidth / 2));
+        child.setAttribute('y', String(Math.round(firstBaseline + lineIndex * lineHeight)));
+        child.textContent = line;
+        node.appendChild(child);
+      });
+      ['color', 'font-family', 'font-size', 'font-weight', 'font-style'].forEach((prop) => {
+        const value = style.getPropertyValue(prop);
+        if (value) node.style[prop === 'color' ? 'fill' : prop] = value;
+      });
+      box.parentNode.replaceChild(node, box);
+    });
+  }
+
+  function wrapWords(text, maxWidth, fontSize) {
+    // Mermaid wrapped this text inside a box of `maxWidth`; the same greedy pass at
+    // an average glyph width keeps it on the same lines without measuring fonts.
+    const perChar = Math.max(1, fontSize * 0.55);
+    const limit = Math.max(1, Math.floor(maxWidth / perChar));
+    const lines = [];
+    let current = '';
+    text.split(' ').forEach((word) => {
+      if (current && (current.length + word.length + 1) > limit) {
+        lines.push(current);
+        current = word;
+      } else {
+        current = current ? current + ' ' + word : word;
+      }
+    });
+    if (current) lines.push(current);
+    return lines.length ? lines : [text];
+  }
+
   function inlineStyles(source, target) {
     const style = computed(source);
     for (const prop of INLINE_PROPS) {
@@ -163,7 +236,10 @@ export function getSerializedSVG(sourceSvg, doc) {
   if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', SVG_NS);
   if (!clone.getAttribute('xmlns:xlink')) clone.setAttribute('xmlns:xlink', XLINK_NS);
 
-  const serializer = new XMLSerializer();
+    // Must run after the style walk and before serialization.
+  htmlLabelsToText();
+
+const serializer = new XMLSerializer();
   let out = serializer.serializeToString(clone);
 
   // Any absolute url(...) that sneaked in during serialization must become a

@@ -58,6 +58,7 @@ def _session():
     state.setdefault("name", "")
     state.setdefault("choice", (templates.BLANK_TYPE_ID, "plain"))
     state.setdefault("loaded_example", None)
+    state.setdefault("loaded_source", None)
     state.setdefault("link_error", None)
     state.setdefault("restore", None)
     state.setdefault("interface_mode", "auto")
@@ -143,16 +144,32 @@ def _sidebar_catalog(state):
         key = (choice, pick)
         if key != state["loaded_example"]:
             source = example.get("source", "")
-            dirty = bool(state["source"].strip()) and state["source"] != source
-            if not dirty:
-                _load_example(state, key, source)
-            else:
-                st.sidebar.warning("The editor holds text that differs from this starting point.")
+            if _is_user_text(state):
+                st.sidebar.warning('The editor holds text you wrote, so it was not replaced. '
+                                   '"Replace it" loads this starting point instead.')
                 if st.sidebar.button("Replace it", key="replace_%s_%s" % key):
                     _load_example(state, key, source)
+            else:
+                _load_example(state, key, source)
     elif state["loaded_example"] != (choice, "blank"):
         _load_example(state, (choice, "blank"), "")
     return choice
+
+
+def _is_user_text(state):
+    """Whether the editor holds text the *user* wrote, which FR-020 protects.
+
+    Text the app itself loaded from the catalogue is not the user's work: it is one
+    selectbox change away from coming back, and requiring a confirmation to go from
+    a type's plain example to its styled one hid the styled showcase entirely --
+    picking "styled" left the plain picture on screen, which reads as the example
+    failing to render. A draft restored from the device, or anything typed or
+    pasted, is user text and is still guarded.
+    """
+    current = state["source"]
+    if not str(current).strip():
+        return False
+    return current != state.get("loaded_source")
 
 
 def _purposes(entry):
@@ -171,6 +188,7 @@ def _purpose_label(purpose):
 def _load_example(state, key, source):
     state["loaded_example"] = key
     state["source"] = source
+    state["loaded_source"] = source
     _mark_change(state)
 
 
@@ -464,6 +482,7 @@ def _download_panel(state):
         state["restore"] = None
         state["link_error"] = None
         state["loaded_example"] = None
+        state["loaded_source"] = None
         state["host_action"] = {"action": "clearStorage"}
         _mark_change(state)
 

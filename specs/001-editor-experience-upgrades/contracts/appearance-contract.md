@@ -160,6 +160,12 @@ any font metrics. Rounding each result separately does not hold — a 252.x-px v
 506 px at `screen` and 1014 px at `print` on Linux (ratio 2.004) while the same diagram was exact
 on macOS, which is why the CI assertion is `print == 2 * screen` in whole pixels.
 
+Two export fidelity rules follow from the same measurement, and both are asserted in
+`tests/export.spec.ts` by counting pixels rather than trusting the file's header: an exported PNG must
+contain the drawing (`the PNG contains the drawing, not an empty plate`), and because journey draws
+its labels as HTML `<foreignObject>` whatever `htmlLabels` says, a standalone file must carry them as
+real `<text>` (`a journey export keeps its labels in a standalone file`).
+
 Diagrams too long for a browser canvas (a 1 155-node spine has a 404 × 133 933 viewBox, and a
 canvas over `RASTER_LIMITS` yields an *empty* data URL rather than an error) are refused before
 the raster is attempted, with the highest scale that fits named, or SVG suggested when none does.

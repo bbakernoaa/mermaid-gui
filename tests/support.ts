@@ -41,9 +41,15 @@ export function appFrame(page: Page): Frame | undefined {
   return page.frames().find((frame) => frame !== page.mainFrame() && frame.url() !== 'about:srcdoc');
 }
 
-/** The preview component: a null-origin srcdoc frame, at any nesting depth. */
+/**
+ * The preview component: a null-origin srcdoc frame, at any nesting depth.
+ * Streamlit can keep the outgoing document attached while its replacement
+ * mounts, and the old one is listed first, so the *newest* srcdoc frame is the
+ * document the app just wrote. Reading the first one shows the previous render.
+ */
 export function previewFrame(page: Page): Frame | undefined {
-  return page.frames().find((frame) => frame.url() === 'about:srcdoc');
+  const frames = page.frames().filter((frame) => frame.url() === 'about:srcdoc');
+  return frames.length ? frames[frames.length - 1] : undefined;
 }
 
 async function componentFrame(page: Page): Promise<Frame> {
@@ -582,6 +588,15 @@ export function component(page: Page): Frame {
 }
 
 export function subject(page: Page): Frame {
+  if (LIVE_APP) {
+    // Streamlit hands over a brand new srcdoc document on every rerun, so any
+    // frame handle kept from before a widget change is already detached. In live
+    // mode always resolve against whatever component document exists right now.
+    const current = previewFrame(page);
+    if (current) return current;
+    if (active && active.page === page) return active.comp;
+    throw new Error('no preview component frame is open');
+  }
   if (active && active.page === page) return active.comp;
   throw new Error('open the app or fixture before querying the component');
 }
@@ -762,7 +777,7 @@ async function openStlite(page: Page, caseName = 'good'): Promise<Harness> {
 export async function liveComponentFrame(page: Page): Promise<Frame> {
   const deadline = Date.now() + 180000;
   for (;;) {
-    const frame = page.frames().find((candidate) => candidate.url() === 'about:srcdoc');
+    const frame = previewFrame(page);
     if (frame) {
       try {
         await frame.waitForLoadState('domcontentloaded');
@@ -780,6 +795,14 @@ export async function liveComponentFrame(page: Page): Promise<Frame> {
 export async function componentLive(page: Page): Promise<Frame> {
   return liveComponentFrame(page);
 }
+
+/** How many component documents are attached right now; more than one means a
+ *  rerun is mid-swap, which is why reads must take the newest frame. */
+export function srcdocFrameCount(page: Page): number {
+  return page.frames().filter((frame) => frame.url() === 'about:srcdoc').length;
+}
+
+
 
 /** The Streamlit sidebar, which under Stlite lives in the top document. */
 export function sidebar(page: Page): Locator {
